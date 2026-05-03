@@ -1,7 +1,7 @@
 variable "bucket_name" {
   description = "Name of the S3 bucket for the static website"
   type        = string
-  default     = "your-name-static-site"
+  default     = "vidaan-static-site-123456789012"
 }
 
 variable "aws_region" {
