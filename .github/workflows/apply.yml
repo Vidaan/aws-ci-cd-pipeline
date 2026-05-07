@@ -21,7 +21,56 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-east-1
 
-      - uses: hashicorp/setup-terraform@v3
+      - name: Run Terraform Apply on Fargate
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster terraform-ci-cluster \
+            --task-definition terraform-ci \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={
+              subnets=[subnet-0bca0d6546ce8b0a2],
+              securityGroups=[sg-065732b9e6507fde7],
+              assignPublicIp=ENABLED
+            }" \
+            --overrides '{
+              "containerOverrides": [{
+                "name": "terraform-runner",
+                "command": ["sh", "-c", "git clone https://github.com/Vidaan/aws-ci-cd-pipeline.git /workspace && cd /workspace && terraform init && terraform apply -auto-approve -no-color"]
+              }]
+            }' \
+            --query 'tasks[0].taskArn' \
+            --output text \
+            --region us-east-1)
 
-      - run: terraform init
-      - run: terraform apply -auto-approve
+          echo "Task ARN: $TASK_ARN"
+
+          # Wait for task to complete
+          aws ecs wait tasks-stopped \
+            --cluster terraform-ci-cluster \
+            --tasks $TASK_ARN \
+            --region us-east-1
+
+          # Get exit code
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster terraform-ci-cluster \
+            --tasks $TASK_ARN \
+            --query 'tasks[0].containers[0].exitCode' \
+            --output text \
+            --region us-east-1)
+
+          echo "Task exit code: $EXIT_CODE"
+
+          # Fetch logs from CloudWatch
+          LOG_STREAM="ecs/terraform-runner/$(basename $TASK_ARN)"
+          aws logs get-log-events \
+            --log-group-name /ecs/terraform-ci \
+            --log-stream-name $LOG_STREAM \
+            --region us-east-1 \
+            --query 'events[*].message' \
+            --output text || echo "Could not fetch logs"
+
+          # Fail the workflow if terraform apply failed
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "Terraform apply failed with exit code $EXIT_CODE"
+            exit 1
+          fi
